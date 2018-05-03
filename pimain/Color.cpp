@@ -1,66 +1,37 @@
 //#include "stdafx.h"
-#include "Pi.h"
+#include "Color.h"
 
 
-CPi::CPi()
+CColor::CColor()
 {
-	//red.id='r';
-	//green.id='g';
+
 	H_MIN = 56;
 	H_MAX = 79;
 	S_MIN = 108;
 	S_MAX = 146;
 	V_MIN = 104;
 	V_MAX = 133;
-	
-	_thread_exit = false;
-	Camera.open();
-	
-	
 
 }
 
 
-CPi::~CPi()
+CColor::~CColor()
 {
-	
-}
-void CPi::vision()
-{
-
-	
-	while (_thread_exit == false)
-	{
-		Camera.grab();
-		Camera.retrieve(frame);
-		//cv::cvtColor(frame, HSV, cv::COLOR_BGR2HSV);
-		//vision_cal();
-		//vision_go();
-		
-
-		//testthis.vision_cal(frame);
-		green.vision_cal(frame);
-		//cv::imshow("HSV", HSV);
-		cv::imshow("frame", frame);
-		//cv::imshow("threshold", threshold);
-	
-		cv::waitKey(1);
-	}
-	Camera.release();
-	
 }
 
-void CPi::vision_cal()
+
+void CColor::vision_cal( cv::Mat frame)
 {
 	//this part was copied from an online example
 	/*cv::GaussianBlur(edges, edges, cv::Size(7, 7), 1.5, 1.5);
 	//cv::Canny(edges, edges, 0, 30, 3);
 	*/
+	cv::cvtColor(frame, HSV, cv::COLOR_BGR2HSV);
 	H_box.clear();
 	S_box.clear();
 	V_box.clear();
 
-	cv::Rect recthsv((frame.size().width / 2) - 25, (frame.size().height / 2) - 25, 50, 50);
+	cv::Rect recthsv((HSV.size().width / 2) - 25, (frame.size().height / 2) - 25, 50, 50);
 	cv::rectangle(frame, recthsv, cv::Scalar(0, 255, 0));
 	for (int i = recthsv.x; i<recthsv.x + recthsv.width; i++)
 	{
@@ -93,23 +64,24 @@ void CPi::vision_cal()
 		V_MAX = *std::max_element(V_box.begin(), V_box.end());
 
 	}
-std::cout << "\r" << "MIN 'H':" << std::left << std::setw(5) << H_MIN
-			<< "MAX 'H':" << std::setw(5) << H_MAX
-			<< "MIN 'S':" << std::setw(5) << S_MIN
-			<< "MAX 'S':" << std::setw(5) << S_MAX
-			<< "MIN 'V':" << std::setw(5) << V_MIN
-			<< "MAX 'V':" << std::setw(5) << V_MAX;
+	std::cout << "\r" << "MIN 'H':" << std::left << std::setw(5) << H_MIN
+		<< "MAX 'H':" << std::setw(5) << H_MAX
+		<< "MIN 'S':" << std::setw(5) << S_MIN
+		<< "MAX 'S':" << std::setw(5) << S_MAX
+		<< "MIN 'V':" << std::setw(5) << V_MIN
+		<< "MAX 'V':" << std::setw(5) << V_MAX;
 	//end of copied part
 
-	//cv::imshow("edges", edges);
 }
 
-void CPi::vision_go()
+
+void CColor::vision_go(cv::Mat frame)
 {
 	/*radius.clear();
 	midmass.clear();
 	*/
-
+	//convert frame to HSV and put into Mat named HSV
+	cv::cvtColor(frame, HSV, cv::COLOR_BGR2HSV);
 
 	//threshold matrix
 	inRange(HSV, cv::Scalar(H_MIN, S_MIN, V_MIN), cv::Scalar(H_MAX, S_MAX, V_MAX), threshold);
@@ -152,63 +124,10 @@ void CPi::vision_go()
 		int index = std::distance(std::begin(radius), radlong);
 		//_mutex.lock();
 		objpoint = midmass[index];
-		std :: cout << "\r"<< objpoint;
+		std::cout << "\r" << objpoint;
 		//_mutex.unlock();
 		objrad = radius[index];
 		cv::circle(frame, objpoint, objrad, cv::Scalar(200, 200, 200));
 	}
-
-
+	//cv::imshow("threshold", threshold);
 }
-//
-//void CPi::vision_thread(CPi* ptr)
-//{
-//	
-//
-//	while (ptr->_thread_exit == false)
-//	{
-//		ptr->vision();
-//	}
-//	
-//	return;
-//}
-
-void CPi::command()
-{
-	while (_thread_exit == false)
-	{
-		char comand;
-		std::cout << "press q to quit\n ";
-		std::cin >> comand;
-		_thread_exit = true;
-	}
-}
-//
-//void CPi::command_thread(CPi* ptr)
-//{
-//	while (ptr->_thread_exit == false)
-//	{
-//		ptr->vision();
-//	}
-//
-//	return;
-//}
-//
-//void CPi::start()
-//{
-//	std::thread t1(&CPi::command_thread, this);
-//	t1.detach();
-//	std::thread t2(&CPi::vision_thread, this);
-//	t2.detach();
-//}
-//void CPi::run()
-//{
-//	start();
-//	while (_thread_exit == false)
-//	{
-//		cv::waitKey(1000);
-//		std :: cout << "got here/n";
-//	}
-//	cv::waitKey(1000);
-//
-//}

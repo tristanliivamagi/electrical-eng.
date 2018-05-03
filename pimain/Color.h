@@ -14,7 +14,6 @@
 //#include <chrono>
 #include <algorithm>
 
-#include "Color.h"
 //camera copy
 
 #include <iostream>
@@ -29,36 +28,19 @@
 
 
 
-class CPi
+class CColor
 {
 public:
-	CPi();
-	~CPi();
-	//std::mutex _mutex;
-	bool _thread_exit;
+	CColor();
+	~CColor();
+	
+	char id;
 
-	CColor testthis;
-	
-	CColor red;
-	
-	CColor green;
-	
+	void vision_cal(cv::Mat frame);
+	void vision_go(cv::Mat frame);
 
 	cv::Mat image;
 	cv::Mat frame, edges, HSV, threshold;
-
-	raspicam::RaspiCam_Cv Camera;
-
-	void vision();
-	void vision_cal();
-	void vision_go();
-
-	std::vector<cv::Vec4i> hierarchy;
-	std::vector<std::vector< cv::Point>> contours;
-	std::vector<cv::Point> contour;
-
-	cv::Point objpoint;
-	float objrad;
 
 	int framewidth;
 	int frameheight;
@@ -72,10 +54,12 @@ public:
 	std::vector <int> H_box, S_box, V_box;
 
 
-	//static void vision_thread(CPi* ptr);
-	void command();
-	/*static void command_thread(CPi* ptr);
-	void start();
-	void run();*/
+	std::vector<cv::Vec4i> hierarchy;
+	std::vector<std::vector< cv::Point>> contours;
+	std::vector<cv::Point> contour;
+
+	cv::Point objpoint;
+	float objrad;
+
 };
 

@@ -6,8 +6,9 @@ LDFLAGS=-Wall `pkg-config --libs opencv` -std=c++11 -lpigpio -lrt -lpthread -lra
 
 all: hello
 
-hello: pimain.o Pi.o 
-	$(CC) $(LDFLAGS) pimain.o Pi.o -o hello
+hello: pimain.o Pi.o Color.o
+	$(CC) $(LDFLAGS) pimain.o Pi.o Color.o -o hello
+
 
 pimain.o: pimain.cpp
 	$(CC) $(CFLAGS) pimain.cpp
@@ -15,6 +16,10 @@ pimain.o: pimain.cpp
 
 Pi.o: Pi.cpp
 	$(CC) $(CFLAGS) Pi.cpp
+
+
+Color.o: Color.cpp
+	$(CC) $(CFLAGS) Color.cpp
 
 clean:
 	rm *o hello
