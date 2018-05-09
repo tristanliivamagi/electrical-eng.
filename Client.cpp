@@ -11,36 +11,35 @@
 #include <windows.h>
 using namespace std;
 
+#define DELAYTIME 100 //Delay time in ms for disabling the image transmission when a priority command is sent
+
 #define PORT 4618			//The port over which communication will take place, for both the client and server
-#define CLIENTBUFFER 65535	//Size of the client's receive buffer in bytes
+#define CLIENTBUFFER 1000000	//Size of the client's receive buffer in bytes
+
+//Status flags returned by GetCommand()
+#define PRIORITYCOMMANDSENT 1
+#define STOPCOMMANDSENT 2
+#define NOCOMMANDSENT 3
 
 SOCKET clientSocket = 0;			//The socket on the client used to communicate with the server
 									//Destructor of Client needs it so it must be a global variable
 
-//Contains functions to (1) get and display the image from the server, and (2) read commands from the keyboard and send them to the server
-//to control the motors, or change the mode (automatic or manual).
-//Sample usage:
-//Client client;
-//while (!client.GetClientError())
-//{
-//	client.GetImage();
-//	client.Command();
-//}
 class Client
 {
 public:
 	Client();
 	~Client();
-	void GetImage(); //Send the "im" command to the server, receive the image, and display it. This should run in an endless loop in a separate thread. 
-	void Client::Command(); //In an endless loop, receive user input and send the commands (other than im) to the server.
+	void GetImage(); //Send the "im" command to the server, receive the image, and display it.
+	bool Client::Command(); //Receive user input and send the commands (other than im) to the server.
 	bool GetClientError() { return clientError; };
+	bool GetManual() { return manual; }
 private:
 	WSADATA wsData;						//Required input to WSAStartup()
 	int returnValue;					//Used to check return values of functions
 	bool clientError = false;			//Flag that is set if an error occurs
 	SOCKET clientSocket = 0;			//The socket on the client used to communicate with the server
 	u_long nonblockingMode = 1;			//Required input to ioctlsocket()
-	//string serverAddress = "192.168.1.24";	//The address of the server to connect to
+	//string serverAddress = "192.168.1.27";	//The address of the server to connect to
 	string serverAddress = "192.168.1.6";	//The address of the server to connect to
 	sockaddr_in ipaddr;					//Structure containing the address of the server to connect to
 	int errorCode;						//Used to store the return value of WSAGetLastError() to determine the error code
@@ -53,12 +52,14 @@ private:
 	int imageSize;						//The size of the received image in bytes. The server sends the size of the image before sending the image.
 	int bytesRead;						//The number of bytes of image data read
 	int input = 0;						//First key code of key pressed
-	int input2 = 0;						//Second key code of key pressed (if any)
 	int keyState = 0;					//keyState >= 0: key not pressed //keyState < 0: key pressed
 	bool keyPressed = false;			//Flag to indicate if a key was pressed
 	int MapToVK(int input2);			//Convert key input code to virtual key code (required input format for GetKeyState())
+	bool commandPriority = false;		//Flag that is used to briefly disable getting the image when a command is sent, in order to increase the speed of
+										//commands that occur in rapid sequence
+	bool manual = true;					//flag to indicate that the robot is in manual mode, meaning the client is able to send commands to it
 };
-
+//=============================================================================================================
 //Constructor: set up sockets and connect to the server
 Client::Client()
 {
@@ -126,17 +127,17 @@ Client::Client()
 
 	}
 }
-
+//=============================================================================================================
 Client::~Client()
 {
 	closesocket(clientSocket);
 	WSACleanup();
 }
-
+//==============================================================================================================
 void Client::GetImage()
 {
 	//Send command to server
-	command = "im";
+	command = "i";
 	returnValue = send(clientSocket, command.c_str(), command.length(), 0);
 	if (returnValue == SOCKET_ERROR)
 	{
@@ -206,12 +207,12 @@ void Client::GetImage()
 		}
 	}
 }
-
-void Client::Command()
+//===========================================================================================================
+bool Client::Command()
 {
 	if (keyPressed == true)
 	{
-		keyState = GetKeyState(MapToVK(input2));
+		keyState = GetKeyState(MapToVK(input));
 
 		if (keyState >= 0)
 		{
@@ -227,8 +228,9 @@ void Client::Command()
 			printf("STOP\n");
 			keyPressed = false;
 			input = 0;
-			input2 = 0;
 			FlushConsoleInputBuffer(GetStdHandle(STD_INPUT_HANDLE));
+			commandPriority = false;
+			Sleep(100);
 		}
 	}
 	else
@@ -236,68 +238,124 @@ void Client::Command()
 		if (_kbhit())
 		{
 			input = _getch();
-			if (input == 224)
+
+			if (input == 56)//8, forward
 			{
-				input2 = _getch();
-
-				if (input2 == 72/*up arrow*/)
+				//Send command to server
+				command = "f";
+				returnValue = send(clientSocket, command.c_str(), command.length(), 0);
+				if (returnValue == SOCKET_ERROR)
 				{
-					//Send command to server
-					command = "f";
-					returnValue = send(clientSocket, command.c_str(), command.length(), 0);
-					if (returnValue == SOCKET_ERROR)
-					{
-						clientError = true;
-						cout << "Client error: failed to send command\n";
-					}
-
-					printf("FWD\n");
-					keyPressed = true;
+					clientError = true;
+					cout << "Client error: failed to send command\n";
 				}
-				else if (input2 == 80/*down arrow*/)
-				{
-					//Send command to server
-					command = "b";
-					returnValue = send(clientSocket, command.c_str(), command.length(), 0);
-					if (returnValue == SOCKET_ERROR)
-					{
-						clientError = true;
-						cout << "Client error: failed to send command\n";
-					}
 
-					printf("BACK\n");
-					keyPressed = true;
-				}
-				else if (input2 == 75/*left arrow*/)
-				{
-					//Send command to server
-					command = "l";
-					returnValue = send(clientSocket, command.c_str(), command.length(), 0);
-					if (returnValue == SOCKET_ERROR)
-					{
-						clientError = true;
-						cout << "Client error: failed to send command\n";
-					}
-
-					printf("LEFT\n");
-					keyPressed = true;
-				}
-				else if (input2 == 77/*right arrow*/)
-				{
-					//Send command to server
-					command = "r";
-					returnValue = send(clientSocket, command.c_str(), command.length(), 0);
-					if (returnValue == SOCKET_ERROR)
-					{
-						clientError = true;
-						cout << "Client error: failed to send command\n";
-					}
-
-					printf("RIGHT\n");
-					keyPressed = true;
-				}
+				printf("FWD\n");
+				keyPressed = true;
+				commandPriority = true;
 			}
-			else if (input == 'a')
+			else if (input == 53)//5, backward
+			{
+				//Send command to server
+				command = "b";
+				returnValue = send(clientSocket, command.c_str(), command.length(), 0);
+				if (returnValue == SOCKET_ERROR)
+				{
+					clientError = true;
+					cout << "Client error: failed to send command\n";
+				}
+
+				printf("BACK\n");
+				keyPressed = true;
+				commandPriority = true;
+			}
+			else if (input == 52)//4, turn left on the spot
+			{
+				//Send command to server
+				command = "l";
+				returnValue = send(clientSocket, command.c_str(), command.length(), 0);
+				if (returnValue == SOCKET_ERROR)
+				{
+					clientError = true;
+					cout << "Client error: failed to send command\n";
+				}
+
+				printf("LEFT\n");
+				keyPressed = true;
+				commandPriority = true;
+			}
+			else if (input == 54)//6, turn right on the spot
+			{
+				//Send command to server
+				command = "r";
+				returnValue = send(clientSocket, command.c_str(), command.length(), 0);
+				if (returnValue == SOCKET_ERROR)
+				{
+					clientError = true;
+					cout << "Client error: failed to send command\n";
+				}
+
+				printf("RIGHT\n");
+				keyPressed = true;
+				commandPriority = true;
+			}
+			else if (input == 47)///, pulse forward
+			{
+				//Send command to server
+				command = "/";
+				returnValue = send(clientSocket, command.c_str(), command.length(), 0);
+				if (returnValue == SOCKET_ERROR)
+				{
+					clientError = true;
+					cout << "Client error: failed to send command\n";
+				}
+
+				printf("PULSE FWD\n");
+			}
+			else if (input == 50)//2, pulse backward
+			{
+				//Send command to server
+				command = "2";
+				returnValue = send(clientSocket, command.c_str(), command.length(), 0);
+				if (returnValue == SOCKET_ERROR)
+				{
+					clientError = true;
+					cout << "Client error: failed to send command\n";
+				}
+
+				printf("PULSE BACKWARD\n");
+			}
+			else if (input == 55)//7, gradual left
+			{
+				//Send command to server
+				command = "7";
+				returnValue = send(clientSocket, command.c_str(), command.length(), 0);
+				if (returnValue == SOCKET_ERROR)
+				{
+					clientError = true;
+					cout << "Client error: failed to send command\n";
+				}
+
+				printf("GRADUAL LEFT\n");
+				keyPressed = true;
+				commandPriority = true;
+			}
+			else if (input == 57)//9, gradual right
+			{
+				//Send command to server
+				command = "9";
+				returnValue = send(clientSocket, command.c_str(), command.length(), 0);
+				if (returnValue == SOCKET_ERROR)
+				{
+					clientError = true;
+					cout << "Client error: failed to send command\n";
+				}
+
+				printf("GRADUAL RIGHT\n");
+				keyPressed = true;
+				commandPriority = true;
+			}
+			else if (input == 'a')//a, automatic
 			{
 				//Send command to server
 				command = "a";
@@ -308,12 +366,13 @@ void Client::Command()
 					cout << "Client error: failed to send command\n";
 				}
 
+				manual = false;
 				printf("AUTO\n");
 			}
-			else if (input == 'm')
+			else if (input == 'R')
 			{
 				//Send command to server
-				command = "m";
+				command = "R";
 				returnValue = send(clientSocket, command.c_str(), command.length(), 0);
 				if (returnValue == SOCKET_ERROR)
 				{
@@ -321,7 +380,46 @@ void Client::Command()
 					cout << "Client error: failed to send command\n";
 				}
 
-				printf("MANUAL\n");
+				printf("RED\n");
+			}
+			else if (input == 'G')
+			{
+				//Send command to server
+				command = "G";
+				returnValue = send(clientSocket, command.c_str(), command.length(), 0);
+				if (returnValue == SOCKET_ERROR)
+				{
+					clientError = true;
+					cout << "Client error: failed to send command\n";
+				}
+
+				printf("GREEN\n");
+			}
+			else if (input == 'B')
+			{
+				//Send command to server
+				command = "B";
+				returnValue = send(clientSocket, command.c_str(), command.length(), 0);
+				if (returnValue == SOCKET_ERROR)
+				{
+					clientError = true;
+					cout << "Client error: failed to send command\n";
+				}
+
+				printf("BLUE\n");
+			}
+			else if (input == 'P')
+			{
+				//Send command to server
+				command = "P";
+				returnValue = send(clientSocket, command.c_str(), command.length(), 0);
+				if (returnValue == SOCKET_ERROR)
+				{
+					clientError = true;
+					cout << "Client error: failed to send command\n";
+				}
+
+				printf("PINK\n");
 			}
 			else if (input == 'x')
 				clientError = true; //Exit
@@ -329,29 +427,76 @@ void Client::Command()
 				printf("Invalid command\n");
 		}
 	}
+	return commandPriority;
 }
 
-int Client::MapToVK(int input2)
+int Client::MapToVK(int input)
 {
-	if (input2 == 72)
-		return VK_UP;
-	else if (input2 == 80)
-		return VK_DOWN;
-	else if (input2 == 75)
-		return VK_LEFT;
-	else if (input2 == 77)
-		return VK_RIGHT;
-	//Don't press a function key!
+	if (input == 56)
+		return VK_NUMPAD8;
+	else if (input == 53)
+		return VK_NUMPAD5;
+	else if (input == 52)
+		return VK_NUMPAD4;
+	else if (input == 54)
+		return VK_NUMPAD6;
+	else if (input == 47)
+		return 47;
+	else if (input == 50)
+		return VK_NUMPAD2;
+	else if (input == 55)
+		return VK_NUMPAD7;
+	else if (input == 57)
+		return VK_NUMPAD9;
+	else
+		return 1;//left mouse button... just something random
 }
 
 int main()
 {
-	Client client;
-	while (!client.GetClientError())
-	{
+	bool commandPriority = false;
+	bool previousCommandPriority = false;
+	bool disableImage = false;
+	double commandPriorityStartTime;
+	double commandPriorityElapsedTime;
 
-		client.GetImage();
-		client.Command();
+	Client client;
+	Sleep(1000);
+	while (!client.GetClientError() && client.GetManual() == true)//Run as long as there is no error and robot is in manual mode
+	{
+		if (disableImage == false)
+		{
+			client.GetImage();
+		}
+		commandPriority = client.Command();
+
+		//----------------------------------------------------------------------------------------------------------------------------------------
+		//Enable image transmission again after a certain amount of time, to allow the image to continue to be transmitted when a key is held down
+		if (commandPriority == true)
+		{
+			if (previousCommandPriority == false)//was a priority command just sent?
+			{
+				disableImage = true;
+				commandPriorityStartTime = cv::getTickCount();
+				previousCommandPriority = true;
+			}
+			else
+			{
+				commandPriorityElapsedTime = (double)(cv::getTickCount() - commandPriorityStartTime) / (double)cv::getTickFrequency();
+				if (commandPriorityElapsedTime > ((double)DELAYTIME / 1000.0))
+					disableImage = false;
+			}
+		}
+		else
+		{
+			disableImage = false;
+			previousCommandPriority = false;
+		}
+	}
+	if (!client.GetClientError())
+	{
+		printf("Robot set to automatic mode. Press any key to exit.\n");
+		_getch();
 	}
 	return 0;
 }//end main
