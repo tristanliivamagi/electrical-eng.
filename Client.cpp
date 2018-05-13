@@ -4,6 +4,7 @@
 #include <thread>
 #include <mutex>
 #include <conio.h>
+#include <sstream>
 #include "opencv.hpp"
 #pragma comment(lib,".\\opencv\\lib\\opencv_world310d.lib")
 #include "Winsock2.h"
@@ -11,10 +12,10 @@
 #include <windows.h>
 using namespace std;
 
-#define DELAYTIME 100 //Delay time in ms for disabling the image transmission when a priority command is sent
-
 #define PORT 4618			//The port over which communication will take place, for both the client and server
 #define CLIENTBUFFER 1000000	//Size of the client's receive buffer in bytes
+#define IMAGEDELAY 10 //Time in ms to wait for the image to transmit
+#define DELAYTIME 100 //Delay time in ms for disabling the image transmission when a priority command is sent
 
 //Status flags returned by GetCommand()
 #define PRIORITYCOMMANDSENT 1
@@ -39,8 +40,8 @@ private:
 	bool clientError = false;			//Flag that is set if an error occurs
 	SOCKET clientSocket = 0;			//The socket on the client used to communicate with the server
 	u_long nonblockingMode = 1;			//Required input to ioctlsocket()
-	//string serverAddress = "192.168.1.27";	//The address of the server to connect to
-	string serverAddress = "192.168.1.6";	//The address of the server to connect to
+	//string serverAddress = "192.168.1.22";	//The address of the server to connect to
+	string serverAddress = "192.168.1.10";	//The address of the server to connect to
 	sockaddr_in ipaddr;					//Structure containing the address of the server to connect to
 	int errorCode;						//Used to store the return value of WSAGetLastError() to determine the error code
 	int startTime;						//Used to time operations and timeout if they take too long
@@ -58,6 +59,10 @@ private:
 	bool commandPriority = false;		//Flag that is used to briefly disable getting the image when a command is sent, in order to increase the speed of
 										//commands that occur in rapid sequence
 	bool manual = true;					//flag to indicate that the robot is in manual mode, meaning the client is able to send commands to it
+	int ultrasonicReading;
+	string ultrasonicDistanceStr;
+	ostringstream convert;
+	bool ultrasonicStatus;
 };
 //=============================================================================================================
 //Constructor: set up sockets and connect to the server
@@ -145,6 +150,54 @@ void Client::GetImage()
 		cout << "Client error: failed to send command\n";
 	}
 
+	//If successful, receive ultrasonic reading
+	if (clientError == false)
+	{
+		//Loop until data has been received, timeout after 2 seconds
+		returnValue = SOCKET_ERROR;
+		double startTime = cv::getTickCount();
+		double elapsedTime = 0;
+		while (returnValue == SOCKET_ERROR && elapsedTime < 2.0)
+		{
+			returnValue = recv(clientSocket, (char *)&ultrasonicReading, sizeof(ultrasonicReading), 0);
+			elapsedTime = (double)(cv::getTickCount() - startTime) / (double)cv::getTickFrequency();
+		}
+	}
+	if (returnValue == SOCKET_ERROR) //If timed out
+	{
+		//clientError = true;
+		cout << "Client error: failed to receive ultrasonic reading from server\n";
+	}
+	else if (returnValue == 0) //If connection was gracefully closed
+	{
+		clientError = true; //This isn't really an error, this is just to get the loop to exit
+		cout << "Connection was closed. Exiting.\n";
+	}
+
+	//If successful, receive ultrasonic status
+	if (clientError == false)
+	{
+		//Loop until data has been received, timeout after 2 seconds
+		returnValue = SOCKET_ERROR;
+		double startTime = cv::getTickCount();
+		double elapsedTime = 0;
+		while (returnValue == SOCKET_ERROR && elapsedTime < 2.0)
+		{
+			returnValue = recv(clientSocket, (char *)&ultrasonicStatus, sizeof(ultrasonicStatus), 0);
+			elapsedTime = (double)(cv::getTickCount() - startTime) / (double)cv::getTickFrequency();
+		}
+	}
+	if (returnValue == SOCKET_ERROR) //If timed out
+	{
+		//clientError = true;
+		cout << "Client error: failed to receive ultrasonic reading from server\n";
+	}
+	else if (returnValue == 0) //If connection was gracefully closed
+	{
+		clientError = true; //This isn't really an error, this is just to get the loop to exit
+		cout << "Connection was closed. Exiting.\n";
+	}
+
 	//If successful, receive image size
 	if (clientError == false)
 	{
@@ -201,6 +254,16 @@ void Client::GetImage()
 			receivedImage = imdecode(cv::Mat(imageSize, 1, CV_8UC3, receiveBuffer), 1);
 			if (receivedImage.empty() == false)
 			{
+				convert.str(string());//clear the stream
+				convert << ultrasonicReading;
+				ultrasonicDistanceStr = convert.str();
+				cv::Point textLowerLeft = cv::Point(200, 90);
+				cv::putText(receivedImage, ultrasonicDistanceStr, textLowerLeft, CV_FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 0, 255), 1, 8, false);
+				cv::Point circlePosition = cv::Point(205, 100);
+				if(ultrasonicStatus == false)
+					cv::circle(receivedImage, circlePosition, 4.0, cv::Scalar(0, 0, 255), -1, cv::LINE_AA);
+				else
+					cv::circle(receivedImage, circlePosition, 4.0, cv::Scalar(0, 255, 0), -1, cv::LINE_AA);
 				cv::imshow("rx", receivedImage);
 				cv::waitKey(100);
 			}
@@ -311,6 +374,19 @@ bool Client::Command()
 				}
 
 				printf("PULSE FWD\n");
+			}
+			else if (input == 42)//*, smart pulse forward
+			{
+				//Send command to server
+				command = "*";
+				returnValue = send(clientSocket, command.c_str(), command.length(), 0);
+				if (returnValue == SOCKET_ERROR)
+				{
+					clientError = true;
+					cout << "Client error: failed to send command\n";
+				}
+
+				printf("SMART PULSE FWD\n");
 			}
 			else if (input == 50)//2, pulse backward
 			{
