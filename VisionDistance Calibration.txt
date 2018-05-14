@@ -1,0 +1,33 @@
+Initial setting scaledist = 762
+Reading 136 to 150
+Distance = 1 m
+1.4 times too high
+
+50 cm
+reading 61
+1.2 times too high
+
+17.2 cm
+reading 20.7
+1.2 times too high
+
+Therefore adjust scaledist upwards by 1.2 times
+762*1.2=914.4
+
+-----
+
+17.2 cm
+reading 25
+did I scale it the wrong way?
+762/1.2=635
+
+-------
+
+17.2 cm
+reading 17.2
+
+52.5 cm
+reading 53
+
+1 m 
+reading 110 to 119

@@ -1,4 +1,5 @@
 #include <iostream>
+//#include <ncurses.h>
 #include <thread>
 #include <mutex>
 #include <opencv2/opencv.hpp>
@@ -20,7 +21,9 @@ typedef int SOCKET;
 #include <fstream>
 #include <sstream>
 #include <opencv2/opencv.hpp>
-//#include "raspicam_cv.h"
+#include "raspicam_cv.h"
+
+#include "Color.h"
 using namespace std;
 
 #define PORT 4618			//The port over which communication will take place, for both the client and server
@@ -48,42 +51,244 @@ using namespace std;
 #define LEFT 3
 #define RIGHT 4
 
-//Relative motor speeds
-#define MAXSPEEDLEFT 100
-#define MAXSPEEDRIGHT 100
-
-//=================================================================================================================
-//NEW DEFINE
-//Gradual turn tightness
-#define TIGHTNESS 50
-//=================================================================================================================
-
 //Hysteresis value for position setpoint when turning
 //System will be satisfied when position is within +/- TURNINGHYSTERESIS of the setpoint, which is 0, the centre of the screen
 #define TURNINGHYSTERESIS 50
 
-#define OBJECTLOSTMINSPEED 25 	//The minimum speed to slow down to when the object is lost
-#define OBJECTLOSTTURNADJUST 1 	//Amount to adjust the turning variable by when the object is lost
+//Relative motor speeds
+#define MAXSPEEDLEFT 90
+#define MAXSPEEDRIGHT 100
+
+#define TIGHTNESS 50 //Gradual turn tightness
+#define PULSETIME 40 //forward and backward pulse time in ms
+#define IDEALDISTANCE 175 //ideal distance to begin a gradual turn in mm
+#define TIMEPERDISTANCE 1600 //number of us required to drive 1 mm
+
+#define scaledist 6350
+#define turndist 175 //mm
+#define slowdist 300 //mm
+#define decel 5
+#define accel 5
+#define turntime 4000 //blind turn durration in milliseconds
+#define gain  100 //divided by 1000
+#define minturn  -69 //max and min turn stops
+#define maxturn  69
+#define Kp 50 //divided by 1000
+#define Td 0  //divided by 1000
+#define startspeed 20//speed at the start
+#define MaxSpeedAuto  25
+#define speedinturn 50
+#define turnrad 10
+#define OBJECTLOSTMINSPEED 18	//The minimum speed to slow down to when the object is lost
+#define OBJECTLOSTTURNADJUST 5 	//Amount to adjust the turning variable by when the object is lost
 #define LONGWAY 1 //Comment out this line to go the short way
-#define MANUALTURNSPEED 50
+
+
+//manual
+#define MANUALTURNSPEED 20
 #define MANUALFORWARDSPEED 100
 #define MANUALBACKWARDSPEED 100
+#define MANUALGRADUALTURNSPEED 80
+#define MANUALGRADUALTURNTIMERIGHT 700//550
+#define MANUALGRADUALTURNTIMELEFT 600//700
 
 //Image cropping settings
 //These settings have been carefully calibrated
 #define RESIZEDWIDTH 680
 #define RESIZEDHEIGHT 480
 #define LEFTEDGE 75
-#define TOPEDGE 130
+#define TOPEDGE 80
 #define WIDTH 480
-#define HEIGHT 350
+#define HEIGHT 200
+//Manual mode image cropping setings
+#define LEFTEDGEMANUAL 75
+#define TOPEDGEMANUAL 120//80
+#define WIDTHMANUAL 480
+#define HEIGHTMANUAL 150//200
 
-//raspicam::RaspiCam_Cv Camera;
-//cv::Mat rawCameraImage;
+//automatic settings
+
+raspicam::RaspiCam_Cv Camera;
+cv::Mat rawCameraImage;
 cv::Mat cameraImage;
-//cv::Mat resizedCameraImage;
-cv::VideoCapture vid;
+cv::Mat resizedCameraImage;
+//cv::VideoCapture vid;
 
+class Ultrasonic
+{
+public:
+	double GetDistance();
+	double GetFilteredDistance();
+	bool GetStatus() {return reliableReading;}
+	Ultrasonic();
+private:
+	double triggerStartTime;
+	double triggerElapsedTime;
+	int echoPulse = 0;
+	double echoPulseTime;
+	bool pulseOccurring = false;
+	double distance = 0.0;
+	bool pulseFinished = false;
+	double filteredDistance = 0.0;
+	double filterStartTime;			//Used to ensure at least 60 ms between calls to GetDistance(), to prevent one echo from interfering with the next.
+	double filterElapsedTime;		//Ditto
+	double tempDistance;
+	int initCounter = 0;			//Used to initialize the filter array. It is set to 0 if the sensor reading is lost and the array needs to be reinitialized.
+	double difference;
+	int rejectionCounter = 0;
+	double calDistance;
+	bool reliableReading = false;
+	double rejectionThreshold = 20.0;	//Reject a reading if it is this far from the reference value
+	int rejectionNumber = 2;			//Recalibrate if this many values in a row rejected
+	int calNumber = 2;					//During calibration, the number of similar values to read before proceeding with normal operation
+};
+
+Ultrasonic::Ultrasonic()
+{
+	gpioSetMode(2/*GPIO2*/, PI_OUTPUT);
+	gpioSetMode(4/*GPIO4*/, PI_INPUT);
+	gpioWrite(2/*GPIO2*/, 1/*Pi output high, sensor trigger input low*/); //Turn trigger output off	
+	filterStartTime = cv::getTickCount();
+}
+
+double Ultrasonic::GetDistance()
+{
+	//Send trigger pulse
+	gpioWrite(2/*GPIO2*/, 0/*Pi output low, sensor trigger input high*/);
+	triggerElapsedTime = 0;
+	triggerStartTime = cv::getTickCount();//Start timer for trigger output
+	while(triggerElapsedTime < 0.000015)
+	{
+		triggerElapsedTime = (double)(cv::getTickCount() - triggerStartTime) / cv::getTickFrequency();
+	}
+	gpioWrite(2/*GPIO2*/, 1/*Pi output high, sensor trigger input low*/);
+		
+	//Read echo pulse
+	pulseFinished = false;
+	while(pulseFinished == false)
+	{
+		echoPulse = gpioRead(4);//GPIO4
+		if(echoPulse == 1)
+		{
+			if(pulseOccurring == false)
+			{
+				pulseOccurring = true;
+				echoPulseTime = cv::getTickCount();
+			}
+		}
+		else
+		{
+			if(pulseOccurring == true)
+			{
+				pulseOccurring = false;
+				distance = ((double)(cv::getTickCount() - echoPulseTime) / cv::getTickFrequency()) * 171500.0 - 0.5;
+				pulseFinished = true;
+			}
+		}
+	}
+	return distance;
+}
+
+double Ultrasonic::GetFilteredDistance()
+{
+	filterElapsedTime = ((double)(cv::getTickCount() - filterStartTime) / cv::getTickFrequency());
+	if(filterElapsedTime > 0.000100)
+	{
+		//If the sensor reading was lost, find it (do not proceed to normal operation until a certain number of similar values have been read)
+		if(initCounter < calNumber)
+		{	
+			//If the sensor reading was just lost, get a calibration value to compare against
+			if(initCounter == 0)
+			{
+				calDistance = GetDistance();
+				//Accept the calibration value if it is reasonable
+				if(calDistance < 1500.0)
+				{
+					initCounter++;
+				}
+			}
+			
+			//Otherwise, get a reading, and decide whether or not to accept it
+			else
+			{
+				//Get a reading
+				tempDistance = GetDistance();
+				
+				//Find the magnitude of the difference between the new value and the calibration value
+				difference = tempDistance - calDistance;
+				if(difference < 0.0)
+					difference = -difference;
+			
+				//Accept it and set it as the new calibration value if it is reasonable
+				if(difference < rejectionThreshold)
+				{
+					initCounter++;
+					calDistance = tempDistance;
+					
+					//If sufficient similar values have been read, set filtered value to calibration value and clear rejection counter
+					if(initCounter == calNumber)
+					{
+						filteredDistance = calDistance;
+						rejectionCounter = 0;
+					}
+				}
+				
+				//Otherwise reject
+				else
+				{
+					rejectionCounter++;
+					//If too many readings in a row rejected, reinitialize
+					if(rejectionCounter > rejectionNumber)
+					{
+						initCounter = 0; //signal to reinitialize
+						rejectionCounter = 0;
+						reliableReading = false;
+					}
+				}
+			}
+		}
+		
+		//Normal operation: read in a new value; accept if reasonable.
+		//If too many values in a row are rejected, reinitialize.
+		else
+		{
+			//Signal that the reading is reliable now
+			reliableReading = true;
+
+			//Get a reading
+			tempDistance = GetDistance();
+		
+			//Find the magnitude of the difference between the new value and the calibration value
+			difference = tempDistance - filteredDistance;
+			if(difference < 0.0)
+				difference = -difference;
+			
+			//Accept, set as new reference value, and set as filtered value if close to calibration value
+			if(difference < rejectionThreshold)
+			{
+				rejectionCounter = 0;
+				calDistance = tempDistance;
+				filteredDistance = tempDistance;
+			}
+			
+			//Otherwise reject
+			else
+			{
+				rejectionCounter++;
+				//If too many readings in a row rejected, reinitialize
+				if(rejectionCounter > rejectionNumber)
+				{
+					initCounter = 0; //signal to reinitialize
+					rejectionCounter = 0;
+					reliableReading = false;
+				}
+			}
+		}
+		//Reset timer
+		filterStartTime = cv::getTickCount();
+	}
+	return filteredDistance;
+}
 //============================================================================================================================
 //This class controls the motors.
 //To use it, call the member functions Stop(), Forward(), etc.
@@ -100,17 +305,15 @@ public:
 	void SpeedUp(int amount);				//ADJUSTS the motor speeds equally to speed them up by the amount passed to it.
 	int GetAverageSpeed() {return (leftSpeed + rightSpeed)/2;}
 	int turning = 0;	//The amount of turning. Positive is to the right and negative is to the left.
-	//===========================================================================================================
-	//NEW FUNCTIONS
 	void PulseForward();
 	void PulseBackward();
-	void GradualTurn(int speed, int direction, int tightness);
-	//===========================================================================================================
+	void GradualTurn(int speed, int direction, int tightness, int delayTime);
+	void SmartPulseForward(int ultrasonicDistanceInt);
+	void SetSpeed(int speed); //Used to SET the speed when both motors are to turn at the same speed.
 private:
 	int mode;
 	int leftSpeed;
 	int rightSpeed;
-	void SetSpeed(int speed); //Used internally to SET the speed when both motors are to turn at the same speed.
 };
 
 Motor::Motor()
@@ -173,7 +376,7 @@ void Motor::Turn(int speed, int direction)
 {
 	Stop();
 	SetSpeed(speed);
-	if (direction == RIGHT)
+	if (direction == LEFT)
 	{
 		gpioWrite(AIN1, 0);
 		gpioWrite(AIN2, 1);
@@ -190,11 +393,8 @@ void Motor::Turn(int speed, int direction)
 	mode = TURN;
 }
 
-//===========================================================================================================
-//NEW FUNCTIONS - remember to add them to the class too
-
 void Motor::PulseForward()
-{
+{	
 	if (mode != FORWARD)
 	{
 		Stop();
@@ -204,15 +404,54 @@ void Motor::PulseForward()
 		gpioWrite(BIN2, 0);
 		gpioWrite(BIN1, 1);
 		
-		//Delay 10 ms
+		//Delay
 		double startTime = cv::getTickCount();
 		double elapsedTime = 0.0;
-		while(elapsedTime < 0.010)
+		while(elapsedTime < ((double)PULSETIME / 1000.0))
 		{
 			elapsedTime = (double)(cv::getTickCount() - startTime) / (double)cv::getTickFrequency();
 		}
-		
 		Stop();
+	}
+}
+
+void Motor::SmartPulseForward(int ultrasonicDistanceInt)
+{
+	int delayTime; //Pulse time in ms
+	
+	if (mode != FORWARD)
+	{
+		Stop();
+		
+		//Calculate Delay
+		if(ultrasonicDistanceInt == 0) //pass 0 to the function to just use PULSETIME
+			delayTime = PULSETIME;
+		else
+		{
+			int difference = ultrasonicDistanceInt - IDEALDISTANCE;
+			if(difference < 0)
+				delayTime = 0; //if too close don't move
+			else
+				delayTime = TIMEPERDISTANCE * difference; //time[us] ~= 1500 us/mm * difference[mm]
+		}
+		
+		if(delayTime > 1000) //minimum pulse 1 ms
+		{
+		SetSpeed(100);
+		gpioWrite(AIN2, 0);
+		gpioWrite(AIN1, 1);
+		gpioWrite(BIN2, 0);
+		gpioWrite(BIN1, 1);
+		//Delay
+		double startTime = cv::getTickCount();
+		double elapsedTime = 0.0;
+		//while(elapsedTime < ((double)PULSETIME / 1000.0))
+		while(elapsedTime < ((double)delayTime / 1000000.0))
+		{
+			elapsedTime = (double)(cv::getTickCount() - startTime) / (double)cv::getTickFrequency();
+		}
+		Stop();
+		}
 	}
 }
 
@@ -221,16 +460,16 @@ void Motor::PulseBackward()
 	if (mode != BACKWARD)
 	{
 		Stop();
-		SetSpeed(100);
+		SetSpeed(50);
 		gpioWrite(AIN1, 0);
 		gpioWrite(AIN2, 1);
 		gpioWrite(BIN1, 0);
 		gpioWrite(BIN2, 1);
 		
-		//Delay 10 ms
+		//Delay
 		double startTime = cv::getTickCount();
 		double elapsedTime = 0.0;
-		while(elapsedTime < 0.010)
+		while(elapsedTime < ((double)PULSETIME / 1000.0))
 		{
 			elapsedTime = (double)(cv::getTickCount() - startTime) / (double)cv::getTickFrequency();
 		}
@@ -239,7 +478,7 @@ void Motor::PulseBackward()
 	}
 }
 
-void Motor::GradualTurn(int speed, int direction, int tightness) //"speed" is the speed of the motor that is to turn fastest
+void Motor::GradualTurn(int speed, int direction, int tightness, int delayTime) //"speed" is the speed of the motor that is to turn fastest
 {
 	Stop();
 
@@ -256,8 +495,8 @@ void Motor::GradualTurn(int speed, int direction, int tightness) //"speed" is th
 		gpioPWM(PWMA, leftSpeed);
 		gpioPWM(PWMB, rightSpeed);
 	
-		gpioWrite(AIN1, 0);
-		gpioWrite(AIN2, 1);
+		gpioWrite(AIN2, 0);
+		gpioWrite(AIN1, 1);
 		gpioWrite(BIN2, 0);
 		gpioWrite(BIN1, 1);
 	}
@@ -276,18 +515,33 @@ void Motor::GradualTurn(int speed, int direction, int tightness) //"speed" is th
 
 		gpioWrite(AIN2, 0);
 		gpioWrite(AIN1, 1);
-		gpioWrite(BIN1, 0);
-		gpioWrite(BIN2, 1);
+		gpioWrite(BIN2, 0);
+		gpioWrite(BIN1, 1);
 	}
 	mode = TURN;
+	//Delay
+	double startTime = cv::getTickCount();
+	double elapsedTime = 0.0;
+	while(elapsedTime < ((double)delayTime / 1000.0))
+	{
+		elapsedTime = (double)(cv::getTickCount() - startTime) / (double)cv::getTickFrequency();
+	}
+	
+	Stop();
 }
-
-//===========================================================================================================
 
 void Motor::Steer()
 {
 	leftSpeed += turning;
 	rightSpeed -= turning;
+	if(leftSpeed > 100)
+		leftSpeed = 100;
+	else if(leftSpeed < 0)
+		leftSpeed = 0;
+	if(rightSpeed > 100)
+		rightSpeed = 100;
+	else if(rightSpeed < 0)
+		rightSpeed = 0;
 	gpioPWM(PWMA, leftSpeed);
 	gpioPWM(PWMB, rightSpeed);
 }
@@ -343,32 +597,66 @@ private:
 	int stage = 1;
 	int centrePosition = 0;						//Holds the centre position of the object obtain from vision functions.
 	cv::Rect cropArea;
+	Ultrasonic ultrasonic;
+	double ultrasonicDistance;
+	bool ultrasonicStatus;
+	int ultrasonicDistanceInt;
+	string ultrasonicDistanceStr;
+	ostringstream convert;
+	
+	bool startauto;
+	CColor red;
+
+	CColor green;
 };
 
 void Server::Run()
 {
-	//Camera.grab();
-	//Camera.retrieve(rawCameraImage);
-	//cv::imshow("raw", rawCameraImage);
-	//cv::waitKey(100);
-	//resize(rawCameraImage, resizedCameraImage, resizedCameraImage.size(), 0, 0, CV_INTER_LINEAR);
-	//cv::imshow("resized", resizedCameraImage);
-	//cv::waitKey(100);
-    //cropArea.x = LEFTEDGE;
-    //cropArea.y = TOPEDGE;
-    //cropArea.width = WIDTH;
-    //cropArea.height = HEIGHT;
-    //cameraImage = resizedCameraImage(cropArea);
+	Camera.grab();
+	Camera.retrieve(rawCameraImage);
+	
+	if(manual == true)
+	{
+		//cv::imshow("raw", rawCameraImage);
+		//cv::waitKey(100);
+		resize(rawCameraImage, resizedCameraImage, resizedCameraImage.size(), 0, 0, CV_INTER_LINEAR);
+		//cv::imshow("resized", resizedCameraImage);
+		//cv::waitKey(100);
+		cropArea.x = LEFTEDGEMANUAL;
+		cropArea.y = TOPEDGEMANUAL;
+		cropArea.width = WIDTHMANUAL;
+		cropArea.height = HEIGHTMANUAL;
+		cameraImage = resizedCameraImage(cropArea);
+	}
+	else
+	{
+		//cv::imshow("raw", rawCameraImage);
+		//cv::waitKey(100);
+		resize(rawCameraImage, resizedCameraImage, resizedCameraImage.size(), 0, 0, CV_INTER_LINEAR);
+		//cv::imshow("resized", resizedCameraImage);
+		//cv::waitKey(100);
+		cropArea.x = LEFTEDGE;
+		cropArea.y = TOPEDGE;
+		cropArea.width = WIDTH;
+		cropArea.height = HEIGHT;
+		cameraImage = resizedCameraImage(cropArea);
+	}
+    
+    cv :: flip(cameraImage,cameraImage,-1);
     //cv::imshow("cameraImage", cameraImage);
     //cv::waitKey(100);
 
+	//ultrasonicDistance = ultrasonic.GetFilteredDistance();
+	ultrasonicDistance = ultrasonic.GetDistance();
+	ultrasonicDistanceInt = (int)ultrasonicDistance;
+	ultrasonicStatus = ultrasonic.GetStatus();
 	
-	if (vid.isOpened() == true)
-	{
-		vid >> cameraImage;
-	}
-	else
-		printf("Error: could not get image from camera\n");
+	//if (vid.isOpened() == true)
+	//{
+	//	vid >> cameraImage;
+	//}
+	//else
+	//	printf("Error: could not get image from camera\n");
 
 	if(manual == true) //Only respond to commands in manual mode
 	{
@@ -434,46 +722,67 @@ void Server::Run()
 				motor.Turn(MANUALTURNSPEED, RIGHT);
 				printf("Turning right on the spot\n");
 			}
-			
-			//============================================================================================================================
-			//NEW COMMANDS
+			//If the client sent the "/" command, pulse forward
 			else if (command == "/")
 			{
 				motor.PulseForward();
 				printf("Pulse forward\n");
 			}
+			//If the client sent the "*" command, smart pulse forward
+			else if (command == "*")
+			{
+				motor.SmartPulseForward(ultrasonicDistanceInt);
+				printf("Smart pulse forward\n");
+			}
+			//If the client sent the "2" command, pulse backward
 			else if (command == "2")
 			{
 				motor.PulseBackward();
 				printf("Pulse backward\n");
 			}
+			//If the client sent the "9" command, turn right gradually
 			else if (command == "9")
 			{
-				motor.GradualTurn(MANUALTURNSPEED, RIGHT, TIGHTNESS);
+				motor.GradualTurn(MANUALGRADUALTURNSPEED, RIGHT, TIGHTNESS, MANUALGRADUALTURNTIMERIGHT);
 				printf("Turning right gradually\n");
 			}
+			//If the client sent the "7" command, turn left gradually
 			else if (command == "7")
 			{
-				motor.GradualTurn(MANUALTURNSPEED, LEFT, TIGHTNESS);
+				motor.GradualTurn(MANUALGRADUALTURNSPEED, LEFT, TIGHTNESS, MANUALGRADUALTURNTIMELEFT);
 				printf("Turning left gradually\n");
 			}
-			//============================================================================================================================
-
 			//If the client sent the "a" command, switch into automatic mode
 			else if (command == "a")
 			{
 				manual = false;
+				startauto=true;
 				printf("Automatic mode\n");
 			}
 			//If the client sent the "R" command, switch into calibration mode for red
-			else if (command == "R")
+					else if (command == "R")
 			{
 				printf("Calibrate red\n");
+				red.vision_cal(rawCameraImage);
+				
+				int pos = red.vision_go(cameraImage);
+				cv::imshow("red calibrate HSV", rawCameraImage);
+				cv::imshow("red calibrate tresh", cameraImage);
+				std :: cout <<pos;
+				cv::waitKey (10);
 			}
 			//If the client sent the "G" command, switch into calibration mode for green
 			else if (command == "G")
 			{
 				printf("Calibrate green\n");
+				green.vision_cal(rawCameraImage);
+				
+				int pos = green.vision_go(cameraImage);
+				cv::imshow("green calibrate HSV", rawCameraImage);
+				cv::imshow("green calibrate tresh",cameraImage);
+				std :: cout <<pos;
+				
+				cv::waitKey (10);
 			}
 			//If the client sent the "B" command, switch into calibration mode for blue
 			else if (command == "B")
@@ -494,10 +803,26 @@ void Server::Run()
 				if (cameraImage.empty() == false)
 				{
 					compressionSettings.push_back(cv::IMWRITE_JPEG_QUALITY); //Set jpeg quality...
-					compressionSettings.push_back(30);						 //...to 30 (out of 100)
+					compressionSettings.push_back(5);						 //...to 30 (out of 100)
 					cv::imencode("image.jpg", cameraImage, compressedImage, compressionSettings);
 				}
 	
+				//Send ultrasonic reading
+				send(clientSocket, (char *)&ultrasonicDistanceInt, sizeof(int), 0);
+				if (returnValue == SOCKET_ERROR)
+				{
+					serverError = true;
+					cout << "Server error: failed to send ultrasonic reading";
+				}
+				
+				//Send ultrasonic status
+				send(clientSocket, (char *)&ultrasonicStatus, sizeof(bool), 0);
+				if (returnValue == SOCKET_ERROR)
+				{
+					serverError = true;
+					cout << "Server error: failed to send ultrasonic status";
+				}
+
 				//Send image size
 				size = compressedImage.size();
 				send(clientSocket, (char *)&size, sizeof(size), 0);
@@ -524,68 +849,288 @@ void Server::Run()
 		}//end "if data received, respond to command"
 	}//end "if in manual mode"
 	
-	else //Automatic mode
+	double delta_T;
+	bool letsturn = false;
+	while(manual == false) //Automatic mode//Automatic mode//Automatic mode//Automatic mode//Automatic mode//Automatic mode
 	{
-		if(LONGWAY == 1)
+		double start_tic, freq;
+		freq = cv::getTickFrequency(); // Get tick frequency
+		start_tic = cv::getTickCount(); // Get number of ticks since event (such as computer on)
+
+		float visionDistance;
+
+		int previousPosition = centrePosition;//starts as 0 
+		
+		int speed;
+		bool nextisleft;
+		bool startturn;
+		int turntimevar;
+		bool longway=1;
+		
+		if(startauto==true)
 		{
+			speed = startspeed;
+			motor.Forward(startspeed);
+			delta_T=0.1;
+			centrePosition=0;
+			startauto=false;
+			
+		}
+	
+		Camera.grab();
+		Camera.retrieve(rawCameraImage);
+	
+	
+	
+		//cv::imshow("raw", rawCameraImage);
+		//cv::waitKey(100);
+		resize(rawCameraImage, resizedCameraImage, resizedCameraImage.size(), 0, 0, CV_INTER_LINEAR);
+		//cv::imshow("resized", resizedCameraImage);
+		//cv::waitKey(100);
+		cropArea.x = LEFTEDGE;
+		cropArea.y = TOPEDGE;
+		cropArea.width = WIDTH;
+		cropArea.height = HEIGHT;
+		cameraImage = resizedCameraImage(cropArea);
+    
+		cv :: flip(cameraImage,cameraImage,-1);
+		//cv::imshow("cameraImage", cameraImage);
+		//int greenpos;
+		//int redpos;
+		//greenpos = green.vision_go(cameraImage);
+
+		
+		if(longway == 1)
+		{
+			
 			if(stage >= 1 && stage <= 11)
 			{
-				//Align
-				do
+				
+				//---Get centre position of object---
+				//green object
+				if(stage==1 || stage==2 || stage==5 || stage==6 || stage==7 || stage==10 || stage==11)
 				{
-					//---Get centre position of object---
+					centrePosition = green.vision_go(cameraImage);
+					visionDistance = scaledist / green.objrad;
+					nextisleft=false;
+						
+					std::cout<<"\nhere in green centrePosition:  "<<centrePosition;
+					std::cout<<"\nhere in green visiondistance: "<<visionDistance;
+					std::cout<<"\nhere in green objrad: "<<green.objrad;
+				}
+				else//red object
+				{
+					centrePosition = red.vision_go(cameraImage);
+					visionDistance = scaledist / green.objrad;
+					nextisleft=true;
+						
+					std::cout<<"\nhere in red centrePosition:  "<<centrePosition;
+					std::cout<<"\nhere in red visiondistance: "<<visionDistance;
+					std::cout<<"\nhere in red objrad: "<<red.objrad;
+				}
 					
-					if(centrePosition == -1000)//no object found
+				if(centrePosition == -1000)//no object found
+				{
+					//Delay
+					std::cout<<"\nhere in no object found";
+					startTime = cv::getTickCount();
+					elapsedTime = 0;
+					received = false;
+					while (returnValue == SOCKET_ERROR && elapsedTime < 10.0)
 					{
-						//Delay
-						startTime = cv::getTickCount();
-						elapsedTime = 0;
-						received = false;
-						while (returnValue == SOCKET_ERROR && elapsedTime < 10.0)
-						{
-							returnValue = recv(clientSocket, receiveBuffer, SERVERBUFFER, 0);
-							elapsedTime = (double)(cv::getTickCount() - startTime) / (double)cv::getTickFrequency();
-						}
-
+						returnValue = recv(clientSocket, receiveBuffer, SERVERBUFFER, 0);
+						elapsedTime = (double)(cv::getTickCount() - startTime) / (double)cv::getTickFrequency();
+					}
+					//motor.turning = 0;
+					//motor.Steer();
+					if(speed > OBJECTLOSTMINSPEED)
+					{
+						speed = speed - decel;
+					}
+					else if(speed < OBJECTLOSTMINSPEED)
+					{
+						speed = speed +accel;
+					}
+					motor.Forward(speed);
 						//Slow down but don't stop
-						if(motor.GetAverageSpeed() > OBJECTLOSTMINSPEED)
-							motor.SlowDown(1);
+						//if(motor.GetAverageSpeed() > OBJECTLOSTMINSPEED)
+						//{
+						//	motor.SlowDown(1);
+							
+						//}
 						//Incrementally turn the other way
-						if(motor.turning != 0)
-							motor.turning += -motor.turning/motor.turning*OBJECTLOSTTURNADJUST;
+						//if(motor.turning != 0)
+							//motor.turning += -motor.turning/motor.turning*OBJECTLOSTTURNADJUST;
 					}
 					else if(centrePosition == 1000)//greater than 50 contours found (too much noise in the signal)
 					{
+						std::cout<<"\nhere in to many objects found";
+						
+						if(speed > OBJECTLOSTMINSPEED)
+						{
+							speed = speed - decel;
+						}
+						else if(speed < OBJECTLOSTMINSPEED)
+						{
+							speed = speed +accel;
+						}
+						motor.Forward(speed);
 						//Slow down but don't stop
-						if(motor.GetAverageSpeed() > OBJECTLOSTMINSPEED)
-							motor.SlowDown(1);
+						//if(motor.GetAverageSpeed() > OBJECTLOSTMINSPEED)
+						//{
+						//	motor.SlowDown(1);
+						//	motor.turning = 0;
+						//	motor.Steer();
+						//}
 						//Incrementally turn the other way
-						if(motor.turning != 0)
-							motor.turning += -motor.turning/motor.turning*OBJECTLOSTTURNADJUST;
+						//if(motor.turning != 0)
+							//motor.turning += -motor.turning/motor.turning*OBJECTLOSTTURNADJUST;
 					}
-					//Calculate proportional response
-					//Calculate integral response
-					//Calculate total response
-					//Set turning variable based on total response
-					//Turn based on turning variable
-				}
-				while(centrePosition < -TURNINGHYSTERESIS || centrePosition > TURNINGHYSTERESIS);
-				
-				//Move
-				
-				//Go to next stage
+					else//NORMAL OPERATION ------------------------------------------------------
+					{
+					
+						//Calculate proportional response
+						float prop= ( (float)centrePosition   *  ((float)Kp/1000.0)  ); 
+						//Calculate deriative response
+						float deriv = (centrePosition-previousPosition)*((float)Kp/1000.0) * (((float)Td/1000.0)/delta_T);
+					
+						if(letsturn==false)
+						{	
+							//Calculate total response
+							motor.turning= ( prop + deriv );
+							std :: cout <<"\nturning input:  "<<motor.turning;
+							//Limit total response
+							if(motor.turning>maxturn)
+							{
+								motor.turning=maxturn;
+							}
+						
+							if(motor.turning < minturn)
+							{
+								motor.turning=minturn;
+							
+							}
+						
+							//Set the amount of turning
+							motor.SetSpeed(motor.GetAverageSpeed());
+							motor.Steer();
+						
+							std :: cout <<"\nturning:  "<<motor.turning;
+					
+							if(visionDistance < turndist && visionDistance>0)
+							{
+								letsturn=true;	
+								startturn=true;
+								turntimevar=0;				
+							
+							}
+							else if( visionDistance< slowdist && visionDistance>0)
+							{
+								if(motor.GetAverageSpeed()<speedinturn)
+								{
+									motor.SpeedUp(accel);
+									speed = motor.GetAverageSpeed();
+								}
+								else
+								{
+									motor.SlowDown(decel);
+									speed = motor.GetAverageSpeed();
+								}
+							}
+							else if(motor.GetAverageSpeed()<MaxSpeedAuto)
+							{
+						
+								motor.SpeedUp(accel);
+								speed = motor.GetAverageSpeed();
+								std::cout<<"\nhere in speedup motorspeed: "<<motor.GetAverageSpeed();
+							}
+							else if(motor.GetAverageSpeed()>MaxSpeedAuto)
+							{
+							
+								motor.SlowDown(decel);
+								speed = motor.GetAverageSpeed();
+								std::cout<<"\nhere in slow motorspeed: "<<motor.GetAverageSpeed();
+							}
+					
+						}
+					}
+					
+					if(letsturn==true)
+					{
+						if(startturn == true)
+						{
+							//speed=speedinturn;
+							//motor.Forward(speedinturn);
+							if(nextisleft==true)
+							{
+								motor.GradualTurn(speedinturn, LEFT, TIGHTNESS, 7 * speedinturn);
+
+								//motor.turning=-turnrad;
+								//motor.Steer();
+								//turnleft
+								std::cout<<"turningleft\n";
+							}
+							else
+							{
+								motor.GradualTurn(speedinturn, RIGHT, TIGHTNESS, 7 * speedinturn);
+
+								//motor.turning=turnrad;
+								//motor.Steer();
+								//turnright
+								std::cout <<"turning right\n";
+							}
+							
+							stage ++;
+							startturn=false;
+						}
+						/*
+						if(turntimevar<turntime)
+						{
+							turntimevar=turntimevar+(int)delta_T;
+							
+						}
+						else
+						{
+							speed=speedinturn;
+							motor.Forward(speedinturn);
+							letsturn=false;
+						}
+						*/
+						letsturn=false; //added this here - WM
+
+					
+					}
+					
+			
 			}
 		}
 		else
 		{
 		}
-	}
+		
+		std :: cout <<"\nstage number: " << stage;
+		cv::imshow("automatic", cameraImage);
+		cv::waitKey (10);
+		delta_T = (cv::getTickCount() - start_tic) / freq;
+		std::cout << "\nelapsed time: " << delta_T; 
+		
+		if (getch())
+		{
+			manual = true;
+		}
+	}//end Automatic mode//end Automatic mode//end Automatic mode//end Automatic mode//end Automatic mode//end Automatic mode
+
+
 }
 
 Server::Server()
 {
+	
+	green.colorid('g');//load color id with default hsv values
+	red.colorid('r');
+	
 	//Initialize resizedCameraImage
-	//resizedCameraImage = cv::Mat::zeros(cv::Size(RESIZEDWIDTH, RESIZEDHEIGHT), CV_8UC3);
+	resizedCameraImage = cv::Mat::zeros(cv::Size(RESIZEDWIDTH, RESIZEDHEIGHT), CV_8UC3);
 
 	//Get size of sockaddr_in structure
 	addressSize = sizeof(serverAddress);
@@ -685,6 +1230,13 @@ Server::~Server()
 //=======================================================================================================================================
 int main()
 {
+	//Initialize ncurses
+	//initscr();
+    //cbreak();
+    //noecho();
+    //scrollok(stdscr, TRUE);
+    //nodelay(stdscr, TRUE);
+    
 	//Initialize GPIO
 	if (gpioInitialise() < 0)
 	{
@@ -693,19 +1245,19 @@ int main()
 	}
 	
 	//Initialize camera
-	vid.open(0);
-	if (vid.isOpened() == false)
-		printf("Error: could not open camera\n");
+	//vid.open(0);
+	//if (vid.isOpened() == false)
+	//	printf("Error: could not open camera\n");
 		
-	//Camera.open();
+	Camera.open();
 
 	Server server;
-
+	
 	while (!server.GetServerError())
 	{	
 		server.Run();		
 	}
 		
 	gpioTerminate();
-	//Camera.release();
+	Camera.release();
 }//end main
