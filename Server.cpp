@@ -64,21 +64,21 @@ using namespace std;
 #define IDEALDISTANCE 175 //ideal distance to begin a gradual turn in mm
 #define TIMEPERDISTANCE 1600 //number of us required to drive 1 mm
 
-//turndist has been moved to just before the automatic while loop
+//turndist has been moved to just before the automatic while loop //not used - see turnDistArray
 #define scaledist 6350
 #define slowdist 300 //mm
 #define decel 5
 #define accel 5
-#define turntime 725 //blind turn durration to the right in milliseconds
-#define turntimeleft 500 //blind turn duration to the left
+#define turntime 700 //blind turn durration to the right in milliseconds
+#define turntimeleft 600 //blind turn duration to the left
 #define autotightness 100 //turn tightness for auto mode
 #define gain  100 //divided by 1000
 #define minturn  -69 //max and min turn stops
 #define maxturn  69
 #define Kp 50 //divided by 1000
 #define Td 0  //divided by 1000
-#define startspeed 20//speed at the start
-#define MaxSpeedAuto  25
+//#define startspeed 20//speed at the start //not used - see startSpeedArray
+#define MaxSpeedAuto  100
 #define speedinturn 50
 #define turnrad 10
 #define OBJECTLOSTMINSPEED 18	//The minimum speed to slow down to when the object is lost
@@ -613,8 +613,9 @@ private:
 	
 	double autoStartTime;
 	double autoElapsedTime;
-	int delayCycles = 10;
+	int delayCycles = 5;
 	bool delayAfterTurn = false;
+	bool weAreCalibrating = false;
 };
 
 void Server::Run()
@@ -680,8 +681,14 @@ void Server::Run()
 		}
 		if (returnValue == SOCKET_ERROR) //If nothing received
 		{
-			serverError = true;
-			cout << "Server error: failed to receive data from client";
+			//Don't freak out when no commands are being sent because we are calibrating
+			if(command == "R" || command == "G")
+				weAreCalibrating = true;
+			else
+			{
+				serverError = true;
+				cout << "Server error: failed to receive data from client";
+			}
 		}
 		else if (returnValue == 0) //If connection gracefully closed
 		{
@@ -694,10 +701,14 @@ void Server::Run()
 		//If data received, respond to the command
 		if (serverError == false && received == true)
 		{
-			//Convert received data to string
-			commandBuffer[0] = receiveBuffer[0];
-			commandBuffer[returnValue] = 0; //Add NULL terminator
-			command = commandBuffer;
+			//If no command received because calibrating, skip this part
+			if(weAreCalibrating == false)
+			{
+				//Convert received data to string
+				commandBuffer[0] = receiveBuffer[0];
+				commandBuffer[returnValue] = 0; //Add NULL terminator
+				command = commandBuffer;
+			}
 			
 			//If the client sent the "s" command, stop
 			if (command == "s")
@@ -860,12 +871,20 @@ void Server::Run()
 	bool letsturn = false;
 	autoElapsedTime = 0.0;
 	autoStartTime = cv::getTickCount();
-	int turndist = 150;
 	bool endDelay = false;
-	int turnOffset = 0;//positive offset turns later
 	int turnTimeOffset = 0;//positive offset increases turn time
+	int speed;
+	//                   stage 1    2   3   4   5   6   7   8   9  10  11 
+	int startSpeedArray[11] = {20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20}; 
+	//                  stage 1    2    3    4    5    6    7    8    9    10   11 
+	int turnDistArray[11] = {150, 200, 150, 150, 150, 150, 150, 150, 150, 150, 150};
+	 
+
+
 	while(manual == false && autoElapsedTime < 60.0) //Automatic mode//Automatic mode//Automatic mode//Automatic mode//Automatic mode//Automatic mode
 	{
+												std::cout << "Top of while Speed " << motor.GetAverageSpeed() << "\n";
+
 		//cv::waitKey(1000);
 		double start_tic, freq;
 		freq = cv::getTickFrequency(); // Get tick frequency
@@ -875,21 +894,20 @@ void Server::Run()
 
 		int previousPosition = centrePosition;//starts as 0 
 		
-		int speed;
 		bool nextisleft;
 		bool startturn;
 		int turntimevar;
 		bool longway=1;
 		
 		if(stage == 4)
-			turnTimeOffset = 100;//just for stage 4
+			turnTimeOffset = 0;//just for stage 4
 		if(stage == 5)
 			turnTimeOffset = 0;//set it back to 0 after
 			
 		if(startauto==true)
 		{
-			speed = startspeed;
-			motor.Forward(startspeed);
+			speed = startSpeedArray[0];
+			motor.Forward(startSpeedArray[0]);
 			delta_T=0.1;
 			centrePosition=0;
 			startauto=false;
@@ -1010,6 +1028,9 @@ void Server::Run()
 					}
 					else//NORMAL OPERATION ------------------------------------------------------
 					{
+						
+																		std::cout << "Normal Operation Speed " << motor.GetAverageSpeed() << "\n";
+
 						if(stage == 11)
 						{
 							turnOffset = 100;//don't turn on the last stage
@@ -1044,15 +1065,29 @@ void Server::Run()
 						
 							//std :: cout <<"\nturning:  "<<motor.turning;
 					
-							if(visionDistance< (turndist - turnOffset) && visionDistance>0)
+							//Turn if close enough
+							if(visionDistance< (turnDistArray[stage-1]) && visionDistance>0)
 							{
 								letsturn=true;	
 								startturn=true;
 								turntimevar=0;				
-							
 							}
+							
+							//Accelerate or decelerate to turn speed if somewhat close
 							else if( visionDistance< slowdist && visionDistance>0)
 							{
+								std::cout << "Slowdist Average Speed " << motor.GetAverageSpeed() << "\n";
+								//Calculate speed based on distance
+								int newSpeed = (int)((float)(motor.GetAverageSpeed() - speedinturn))/((float)(slowdist - turnDistArray[stage-1]))*(visionDistance - (float)turnDistArray[stage-1]) + speedinturn;
+								std::cout << "Distance " << visionDistance << "Speed " << motor.GetAverageSpeed() << "New Speed " << newSpeed << "\n";
+								//Set new speed
+								motor.Forward(newSpeed);
+								//Keep the amount of turning the same
+								motor.Steer();
+								//Update speed variable
+								speed = newSpeed;
+								
+								/*
 								if(motor.GetAverageSpeed()<speedinturn)
 								{
 									motor.SpeedUp(accel);
@@ -1063,7 +1098,10 @@ void Server::Run()
 									motor.SlowDown(decel);
 									speed = motor.GetAverageSpeed();
 								}
+								*/
 							}
+							
+							//Accelerate if below max speed
 							else if(motor.GetAverageSpeed()<MaxSpeedAuto)
 							{
 						
@@ -1071,6 +1109,8 @@ void Server::Run()
 								speed = motor.GetAverageSpeed();
 								//std::cout<<"\nhere in speedup motorspeed: "<<motor.GetAverageSpeed();
 							}
+							
+							//Decelerate if above max speed
 							else if(motor.GetAverageSpeed()>MaxSpeedAuto)
 							{
 							
@@ -1084,15 +1124,6 @@ void Server::Run()
 					
 					if(letsturn==true)
 					{
-						//if(stage == 3)
-						//{
-							//motor.Stop();
-							//cv::waitKey(10000);
-						//}
-						//if (stage == 3)
-						//	turndist = 100;
-						//if (stage == 4)
-						//	turndist = 150;
 						if(startturn == true)
 						{
 							//speed=speedinturn;
@@ -1100,7 +1131,7 @@ void Server::Run()
 							if(nextisleft==true)
 							{
 								motor.GradualTurn(speedinturn, LEFT, autotightness, (turntimeleft + turnTimeOffset));
-								motor.Forward(startspeed);
+								motor.Forward(startSpeedArray[stage-1]);
 
 								//motor.turning=-turnrad;
 								//motor.Steer();
@@ -1110,7 +1141,7 @@ void Server::Run()
 							else
 							{
 								motor.GradualTurn(speedinturn, RIGHT, autotightness, (turntime+turnTimeOffset));
-								motor.Forward(startspeed);
+								motor.Forward(startSpeedArray[stage-1]);
 								//motor.turning=turnrad;
 								//motor.Steer();
 								//turnright
@@ -1165,7 +1196,8 @@ void Server::Run()
 		//{
 		//	manual = true;
 		//}
-		
+										std::cout << "Bottom of while Speed " << motor.GetAverageSpeed() << "\n";
+
 		autoElapsedTime = (double)(cv::getTickCount() - autoStartTime) / cv::getTickFrequency();
 		//printf("autoElapsedTime = %.2f\n", autoElapsedTime);
 	}//end Automatic mode//end Automatic mode//end Automatic mode//end Automatic mode//end Automatic mode//end Automatic mode
