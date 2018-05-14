@@ -64,12 +64,14 @@ using namespace std;
 #define IDEALDISTANCE 175 //ideal distance to begin a gradual turn in mm
 #define TIMEPERDISTANCE 1600 //number of us required to drive 1 mm
 
+//turndist has been moved to just before the automatic while loop
 #define scaledist 6350
-#define turndist 175 //mm
 #define slowdist 300 //mm
 #define decel 5
 #define accel 5
-#define turntime 4000 //blind turn durration in milliseconds
+#define turntime 725 //blind turn durration to the right in milliseconds
+#define turntimeleft 500 //blind turn duration to the left
+#define autotightness 100 //turn tightness for auto mode
 #define gain  100 //divided by 1000
 #define minturn  -69 //max and min turn stops
 #define maxturn  69
@@ -608,6 +610,11 @@ private:
 	CColor red;
 
 	CColor green;
+	
+	double autoStartTime;
+	double autoElapsedTime;
+	int delayCycles = 10;
+	bool delayAfterTurn = false;
 };
 
 void Server::Run()
@@ -851,8 +858,15 @@ void Server::Run()
 	
 	double delta_T;
 	bool letsturn = false;
-	while(manual == false) //Automatic mode//Automatic mode//Automatic mode//Automatic mode//Automatic mode//Automatic mode
+	autoElapsedTime = 0.0;
+	autoStartTime = cv::getTickCount();
+	int turndist = 150;
+	bool endDelay = false;
+	int turnOffset = 0;//positive offset turns later
+	int turnTimeOffset = 0;//positive offset increases turn time
+	while(manual == false && autoElapsedTime < 60.0) //Automatic mode//Automatic mode//Automatic mode//Automatic mode//Automatic mode//Automatic mode
 	{
+		//cv::waitKey(1000);
 		double start_tic, freq;
 		freq = cv::getTickFrequency(); // Get tick frequency
 		start_tic = cv::getTickCount(); // Get number of ticks since event (such as computer on)
@@ -867,6 +881,11 @@ void Server::Run()
 		int turntimevar;
 		bool longway=1;
 		
+		if(stage == 4)
+			turnTimeOffset = 100;//just for stage 4
+		if(stage == 5)
+			turnTimeOffset = 0;//set it back to 0 after
+			
 		if(startauto==true)
 		{
 			speed = startspeed;
@@ -876,11 +895,12 @@ void Server::Run()
 			startauto=false;
 			
 		}
+		
+		if(stage == 3 && endDelay == false)
+			delayAfterTurn = true;
 	
 		Camera.grab();
 		Camera.retrieve(rawCameraImage);
-	
-	
 	
 		//cv::imshow("raw", rawCameraImage);
 		//cv::waitKey(100);
@@ -899,11 +919,19 @@ void Server::Run()
 		//int redpos;
 		//greenpos = green.vision_go(cameraImage);
 
-		
+		//for possible use:
+		//ultrasonicDistance = ultrasonic.GetFilteredDistance();
+		ultrasonicDistance = ultrasonic.GetDistance();
+		ultrasonicDistanceInt = (int)ultrasonicDistance;
+		ultrasonicStatus = ultrasonic.GetStatus();
+
 		if(longway == 1)
 		{
 			
 			if(stage >= 1 && stage <= 11)
+			{
+				
+			if(delayAfterTurn == false)
 			{
 				
 				//---Get centre position of object---
@@ -914,33 +942,27 @@ void Server::Run()
 					visionDistance = scaledist / green.objrad;
 					nextisleft=false;
 						
-					std::cout<<"\nhere in green centrePosition:  "<<centrePosition;
-					std::cout<<"\nhere in green visiondistance: "<<visionDistance;
-					std::cout<<"\nhere in green objrad: "<<green.objrad;
+					//std::cout<<"\nhere in green centrePosition:  "<<centrePosition;
+					//std::cout<<"\nhere in green visiondistance: "<<visionDistance;
+					//std::cout<<"\nhere in green objrad: "<<green.objrad;
+					std::cout << stage << " " << (int)visionDistance << " " << green.objrad << std::endl;
 				}
 				else//red object
 				{
 					centrePosition = red.vision_go(cameraImage);
-					visionDistance = scaledist / green.objrad;
+					visionDistance = scaledist / red.objrad;
 					nextisleft=true;
 						
-					std::cout<<"\nhere in red centrePosition:  "<<centrePosition;
-					std::cout<<"\nhere in red visiondistance: "<<visionDistance;
-					std::cout<<"\nhere in red objrad: "<<red.objrad;
+					//std::cout<<"\nhere in red centrePosition:  "<<centrePosition;
+					//std::cout<<"\nhere in red visiondistance: "<<visionDistance;
+					//std::cout<<"\nhere in red objrad: "<<red.objrad;
+					std::cout << stage << " " << (int)visionDistance << " " << red.objrad << std::endl;
 				}
 					
 				if(centrePosition == -1000)//no object found
 				{
 					//Delay
-					std::cout<<"\nhere in no object found";
-					startTime = cv::getTickCount();
-					elapsedTime = 0;
-					received = false;
-					while (returnValue == SOCKET_ERROR && elapsedTime < 10.0)
-					{
-						returnValue = recv(clientSocket, receiveBuffer, SERVERBUFFER, 0);
-						elapsedTime = (double)(cv::getTickCount() - startTime) / (double)cv::getTickFrequency();
-					}
+					//std::cout<<"\nhere in no object found";
 					//motor.turning = 0;
 					//motor.Steer();
 					if(speed > OBJECTLOSTMINSPEED)
@@ -964,7 +986,7 @@ void Server::Run()
 					}
 					else if(centrePosition == 1000)//greater than 50 contours found (too much noise in the signal)
 					{
-						std::cout<<"\nhere in to many objects found";
+						//std::cout<<"\nhere in to many objects found";
 						
 						if(speed > OBJECTLOSTMINSPEED)
 						{
@@ -988,6 +1010,11 @@ void Server::Run()
 					}
 					else//NORMAL OPERATION ------------------------------------------------------
 					{
+						if(stage == 11)
+						{
+							turnOffset = 100;//don't turn on the last stage
+							motor.SpeedUp(20);
+						}
 					
 						//Calculate proportional response
 						float prop= ( (float)centrePosition   *  ((float)Kp/1000.0)  ); 
@@ -998,7 +1025,7 @@ void Server::Run()
 						{	
 							//Calculate total response
 							motor.turning= ( prop + deriv );
-							std :: cout <<"\nturning input:  "<<motor.turning;
+							//std :: cout <<"\nturning input:  "<<motor.turning;
 							//Limit total response
 							if(motor.turning>maxturn)
 							{
@@ -1015,9 +1042,9 @@ void Server::Run()
 							motor.SetSpeed(motor.GetAverageSpeed());
 							motor.Steer();
 						
-							std :: cout <<"\nturning:  "<<motor.turning;
+							//std :: cout <<"\nturning:  "<<motor.turning;
 					
-							if(visionDistance < turndist && visionDistance>0)
+							if(visionDistance< (turndist - turnOffset) && visionDistance>0)
 							{
 								letsturn=true;	
 								startturn=true;
@@ -1042,14 +1069,14 @@ void Server::Run()
 						
 								motor.SpeedUp(accel);
 								speed = motor.GetAverageSpeed();
-								std::cout<<"\nhere in speedup motorspeed: "<<motor.GetAverageSpeed();
+								//std::cout<<"\nhere in speedup motorspeed: "<<motor.GetAverageSpeed();
 							}
 							else if(motor.GetAverageSpeed()>MaxSpeedAuto)
 							{
 							
 								motor.SlowDown(decel);
 								speed = motor.GetAverageSpeed();
-								std::cout<<"\nhere in slow motorspeed: "<<motor.GetAverageSpeed();
+								//std::cout<<"\nhere in slow motorspeed: "<<motor.GetAverageSpeed();
 							}
 					
 						}
@@ -1057,27 +1084,37 @@ void Server::Run()
 					
 					if(letsturn==true)
 					{
+						//if(stage == 3)
+						//{
+							//motor.Stop();
+							//cv::waitKey(10000);
+						//}
+						//if (stage == 3)
+						//	turndist = 100;
+						//if (stage == 4)
+						//	turndist = 150;
 						if(startturn == true)
 						{
 							//speed=speedinturn;
 							//motor.Forward(speedinturn);
 							if(nextisleft==true)
 							{
-								motor.GradualTurn(speedinturn, LEFT, TIGHTNESS, 7 * speedinturn);
+								motor.GradualTurn(speedinturn, LEFT, autotightness, (turntimeleft + turnTimeOffset));
+								motor.Forward(startspeed);
 
 								//motor.turning=-turnrad;
 								//motor.Steer();
 								//turnleft
-								std::cout<<"turningleft\n";
+								//std::cout<<"turningleft\n";
 							}
 							else
 							{
-								motor.GradualTurn(speedinturn, RIGHT, TIGHTNESS, 7 * speedinturn);
-
+								motor.GradualTurn(speedinturn, RIGHT, autotightness, (turntime+turnTimeOffset));
+								motor.Forward(startspeed);
 								//motor.turning=turnrad;
 								//motor.Steer();
 								//turnright
-								std::cout <<"turning right\n";
+								//std::cout <<"turning right\n";
 							}
 							
 							stage ++;
@@ -1097,10 +1134,20 @@ void Server::Run()
 						}
 						*/
 						letsturn=false; //added this here - WM
-
+						
 					
 					}
-					
+			}//end if delayafterturn == false
+			else if (delayCycles > 0 )
+			{
+				std::cout<< "Here in delayafterturn\n";
+				delayCycles--;
+			}//end else if	
+			else
+			{
+				delayAfterTurn = false;
+				endDelay = true;
+			}//end else
 			
 			}
 		}
@@ -1108,18 +1155,22 @@ void Server::Run()
 		{
 		}
 		
-		std :: cout <<"\nstage number: " << stage;
+		//std :: cout <<"\nstage number: " << stage;
 		cv::imshow("automatic", cameraImage);
 		cv::waitKey (10);
 		delta_T = (cv::getTickCount() - start_tic) / freq;
-		std::cout << "\nelapsed time: " << delta_T; 
+		//std::cout << "\nelapsed time: " << delta_T; 
 		
-		if (getch())
-		{
-			manual = true;
-		}
+		//if (getch())
+		//{
+		//	manual = true;
+		//}
+		
+		autoElapsedTime = (double)(cv::getTickCount() - autoStartTime) / cv::getTickFrequency();
+		//printf("autoElapsedTime = %.2f\n", autoElapsedTime);
 	}//end Automatic mode//end Automatic mode//end Automatic mode//end Automatic mode//end Automatic mode//end Automatic mode
-
+	if(manual == false)
+		serverError = true;//exit program if coming out of automatic loop
 
 }
 

@@ -188,7 +188,7 @@ int CColor::vision_go(cv::Mat myframe)
 	int xpos;
 	findContours(mythreshold, contours, hierarchy, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
 	unsigned int iterate = contours.size();
-	printf("number of contours %d\n", iterate);
+	//printf("number of contours %d\n", iterate);
 	if (iterate > 0 && iterate <50)
 	{
 
