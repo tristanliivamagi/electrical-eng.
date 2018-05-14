@@ -34,6 +34,7 @@ public:
 	bool Client::Command(); //Receive user input and send the commands (other than im) to the server.
 	bool GetClientError() { return clientError; };
 	bool GetManual() { return manual; }
+	bool calibrating = false;			//disable image requests during calibration
 private:
 	WSADATA wsData;						//Required input to WSAStartup()
 	int returnValue;					//Used to check return values of functions
@@ -288,6 +289,8 @@ bool Client::Command()
 				cout << "Client error: failed to send command\n";
 			}
 
+			calibrating = false;
+
 			printf("STOP\n");
 			keyPressed = false;
 			input = 0;
@@ -455,7 +458,7 @@ bool Client::Command()
 					clientError = true;
 					cout << "Client error: failed to send command\n";
 				}
-
+				calibrating = true;
 				printf("RED\n");
 			}
 			else if (input == 'G')
@@ -468,7 +471,7 @@ bool Client::Command()
 					clientError = true;
 					cout << "Client error: failed to send command\n";
 				}
-
+				calibrating = true;
 				printf("GREEN\n");
 			}
 			else if (input == 'B')
@@ -540,7 +543,7 @@ int main()
 	Sleep(1000);
 	while (!client.GetClientError() && client.GetManual() == true)//Run as long as there is no error and robot is in manual mode
 	{
-		if (disableImage == false)
+		if (disableImage == false && client.calibrating == false)
 		{
 			client.GetImage();
 		}
